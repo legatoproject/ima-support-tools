@@ -1,4 +1,5 @@
 #!/bin/bash
+
 ###############################################################################
 # This executable will sign files using IMA private key. It must be run as
 # root or under fakeroot.
@@ -31,7 +32,7 @@ UMASK=022
 umask $UMASK
 
 # Version of this executable.
-VERSION="0.90"
+VERSION="0.92"
 
 # Global return types
 SWI_OK=0
@@ -67,9 +68,7 @@ TYPE="default"
 
 function version()
 {
-    echo ""
     echo " $( basename $0 ) version $VERSION"
-    echo ""
 
     return $SWI_OK
 }
@@ -167,6 +166,12 @@ function parse_options()
         esac
 
     done
+
+    # Check that a command has been provided
+    if ! $IMA_SIGN; then
+        usage;
+        exit $SWI_ERR;
+    fi
 
     return $SWI_OK
 }

@@ -1,4 +1,5 @@
 #!/bin/bash
+
 ###############################################################################
 # This executable will generate various keys and certificates based on various
 # input options.
@@ -36,7 +37,7 @@ UMASK=022
 umask $UMASK
 
 # Version of this executable.
-VERSION="0.91"
+VERSION="0.92"
 
 # Global return types
 SWI_OK=0
@@ -45,7 +46,7 @@ SWI_ERR=1
 # Read all options. Remember that:
 # ':'  - "must have" option
 # '::' - "optional" option
-TEMP=`getopt -o asigvhc:m:n:o:p:q:r:e: --long allkeys,systemkeys,imakeys,signimareq,version,help,systemconf:,imaconf:,systemprivkey:,systemcert:,imaprivkey:,imareqsigncert:,imacert:,expiration: -n 'ima-gen-keys' -- "$@"`
+TEMP=`getopt -o asigvhc:m:n:o:p:q:r:e:H:L: --long allkeys,systemkeys,imakeys,signimareq,version,help,systemconf:,imaconf:,systemprivkey:,systemcert:,imaprivkey:,imareqsigncert:,imacert:,expiration:,hash:,keylength: -n 'ima-gen-keys' -- "$@"`
 if [ $? != 0 ] ; then exit $SWI_ERR ; fi
 
 eval set -- "$TEMP"
@@ -64,6 +65,8 @@ IMA_PRIV_KEY=""
 IMA_REQSIGN_CERT=""
 IMA_PUB_CERT=""
 KEY_EXP_DAYS=365
+HASH_ALG="sha256"
+KEY_LENGTH="rsa:2048"
 
 #
 # Useful methods.
@@ -72,9 +75,7 @@ KEY_EXP_DAYS=365
 # Dump version of this executable.
 function version()
 {
-    echo ""
     echo " $( basename $0 ) version $VERSION"
-    echo ""
 
     return $SWI_OK
 }
@@ -133,6 +134,8 @@ Usage:
                            request.
     -r, --imacert          Location of the .ima public certificate.
     -e, --expiration       Certificate expiration in days.
+    -H, --hash             Hash algorithm (sha1 | md5 | sha256 | sha512 | wp512 ...)
+    -L, --keylength        Key length (rsa:1024 | rsa:2048 | rsa:4096 ...)
 
 
 Some of the options may be specified together. For example:
@@ -224,9 +227,21 @@ function parse_options()
                 shift 2;
                 ;;
 
-            # key expiration (days)
+            # Key expiration (days)
             -e | --expiration )
                 KEY_EXP_DAYS=$2;
+                shift 2;
+                ;;
+
+            # Hash algorithm
+            -H | --hash )
+                HASH_ALG=$2;
+                shift 2;
+                ;;
+
+            # Key length
+            -L | --keylength )
+                KEY_LENGTH=$2;
                 shift 2;
                 ;;
 
@@ -254,6 +269,15 @@ function parse_options()
         esac
 
     done
+
+    # Check that a command has been provided
+    if ! ( $GEN_ALL_KEYS || \
+           $GEN_SYSTEM_KEYS || \
+           $GEN_IMA_KEYS || \
+           $SIGN_IMA_REQ ); then
+        usage;
+        exit $SWI_ERR;
+    fi
 
     return $SWI_OK
 }
@@ -366,15 +390,23 @@ function create_system_keys()
     fi
 
     # Generate private/public ".system" pair.
-    openssl req -new -x509 -utf8 -sha1 -days $KEY_EXP_DAYS -batch -nodes \
-                -config $SYSTEM_CONF \
-                -outform DER \
-                -out $SYSTEM_PUB_CERT \
-                -keyout $SYSTEM_PRIV_KEY
+    openssl req -new -x509 \
+                     -nodes \
+                     -utf8 \
+                     -$HASH_ALG \
+                     -days $KEY_EXP_DAYS \
+                     -batch \
+                     -config $SYSTEM_CONF \
+                     -outform DER \
+                     -out $SYSTEM_PUB_CERT \
+                     -newkey $KEY_LENGTH \
+                     -keyout $SYSTEM_PRIV_KEY
     if [ $? -ne $SWI_OK ] ; then return $SWI_ERR ; fi
 
     # Convert DER to PEM
-    openssl x509 -inform DER -in $SYSTEM_PUB_CERT -out $SYSTEM_PUB_CERT_PEM
+    openssl x509 -inform DER \
+                 -in $SYSTEM_PUB_CERT \
+                 -out $SYSTEM_PUB_CERT_PEM
     if [ $? -ne $SWI_OK ] ; then return $SWI_ERR ; fi
 
     return $SWI_OK
@@ -399,10 +431,15 @@ function create_ima_keys()
     fi
 
     # Generate private key and X509 public key certificate signing request
-    openssl req -new -nodes -utf8 -sha1 -days $KEY_EXP_DAYS -batch \
-            -config $IMA_CONF \
-            -out $IMA_REQSIGN_CERT \
-            -keyout $IMA_PRIV_KEY
+    openssl req -new -nodes \
+                     -utf8 \
+                     -$HASH_ALG \
+                     -days $KEY_EXP_DAYS \
+                     -batch \
+                     -config $IMA_CONF \
+                     -out $IMA_REQSIGN_CERT \
+                     -newkey $KEY_LENGTH \
+                     -keyout $IMA_PRIV_KEY
     if [ $? -ne $SWI_OK ] ; then return $SWI_ERR ; fi
 
     return $SWI_OK
@@ -461,10 +498,16 @@ function sign_ima_req()
     fi
 
     # All is good, now we can sign request for signing.
-    openssl x509 -req -in $IMA_REQSIGN_CERT -days $KEY_EXP_DAYS \
-            -extfile $IMA_CONF -extensions v3_usr \
-             -CA $SYSTEM_PUB_CERT_PEM -CAkey $SYSTEM_PRIV_KEY -CAcreateserial \
-             -outform DER -out $IMA_PUB_CERT
+    openssl x509 -req -in $IMA_REQSIGN_CERT \
+                      -days $KEY_EXP_DAYS \
+                      -extfile $IMA_CONF \
+                      -extensions v3_usr \
+                      -$HASH_ALG \
+                      -CA $SYSTEM_PUB_CERT_PEM \
+                      -CAkey $SYSTEM_PRIV_KEY \
+                      -CAcreateserial \
+                      -outform DER \
+                      -out $IMA_PUB_CERT
     if [ $? -ne $SWI_OK ] ; then return $SWI_ERR ; fi
 
     return $SWI_OK
